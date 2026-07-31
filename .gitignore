@@ -1,0 +1,18 @@
+# 编辑器（后台管理工具，不部署到 GitHub Pages）
+admin/
+editor/
+
+# 本机启动器（仅本机用，不进仓库）
+start.bat
+ElecSim-Start.bat
+
+# 备份文件（可视化编辑器自动生成，禁止提交进仓库）
+*.bak
+*.tmp.js
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 依赖
+node_modules/
