@@ -223,8 +223,8 @@ const Registry = {
       desc: '',
       w: 200,
       h: 200,
-      image: 'images/图片变白色__66_.png',
-      imageOn: 'images/O1CN01DGKuXY1vVZjlBFfEI___722946178.jpg.png',
+      image: 'images/电脑关机.webp',
+      imageOn: 'images/电脑开机.webp',
       pins: [
         {
           id: 'pin0',
@@ -233,6 +233,8 @@ const Registry = {
           dy: -31,
           lo: 0,
           ld: 18,
+          fs: 0,
+          lp: '',
           type: 'load'
         },
         {
@@ -242,6 +244,8 @@ const Registry = {
           dy: -31,
           lo: 0,
           ld: 18,
+          fs: 0,
+          lp: '',
           type: 'load'
         }
       ],
