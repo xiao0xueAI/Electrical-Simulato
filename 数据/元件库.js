@@ -221,30 +221,30 @@ const Registry = {
       cat: '电源',
       icon: '🖥️',
       desc: '',
-      w: 200,
-      h: 200,
+      w: 300,
+      h: 198,
       image: 'images/电脑关机.webp',
       imageOn: 'images/电脑开机.webp',
       pins: [
         {
           id: 'pin0',
           label: 'SW 1',
-          dx: -49,
-          dy: -24,
-          lo: -23,
+          dx: -71,
+          dy: -57,
+          lo: -33,
           ld: 0,
-          fs: 10,
+          fs: 15,
           lp: 'custom',
           type: 'load'
         },
         {
           id: 'pin1',
           label: 'SW 2',
-          dx: -49,
-          dy: -37,
-          lo: -23,
+          dx: -71,
+          dy: -82,
+          lo: -33,
           ld: 0,
-          fs: 10,
+          fs: 15,
           lp: 'custom',
           type: 'load'
         }
@@ -253,7 +253,7 @@ const Registry = {
         voltage: 220,
         wattage: 60
       },
-      pinRadius: 5
+      pinRadius: 8.5
     },
   ],
 
@@ -284,6 +284,7 @@ const Registry = {
       y: Math.round(y / g) * g,
       pins: def.pins.map(p => ({ ...p })),
       props: { ...def.props },
+      pinRadius: def.pinRadius,
       simCurrent: 0,
       simVoltage: 0
     };

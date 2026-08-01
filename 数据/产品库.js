@@ -425,7 +425,7 @@ const QIACHIP = {
       type: p.type || ('product_' + (p.id || p.model)),
       name: p.name, cat: p.cat || 'QIACHIP产品', icon: p.icon || '📡',
       desc: p.model || p.desc || '', w: p.w || 140, h: p.h || 90,
-      pins: p.pins || [],
+      pins: p.pins || [], pinRadius: p.pinRadius,
       props: { ...(p.specs || {}), ...(p.props || {}), behavior: p.behavior || 'blackbox', energized: false },
       image: p.image || null,
       imageOn: p.imageOn || null,
