@@ -219,7 +219,7 @@ const Registry = {
       type: 'computer',
       name: '电脑',
       cat: '电源',
-      icon: '🔧',
+      icon: '🖥️',
       desc: '',
       w: 200,
       h: 200,
@@ -229,30 +229,31 @@ const Registry = {
         {
           id: 'pin0',
           label: 'SW 1',
-          dx: 6,
-          dy: -31,
-          lo: 0,
-          ld: 18,
-          fs: 0,
-          lp: '',
+          dx: -49,
+          dy: -24,
+          lo: -23,
+          ld: 0,
+          fs: 10,
+          lp: 'custom',
           type: 'load'
         },
         {
           id: 'pin1',
           label: 'SW 2',
-          dx: 14,
-          dy: -31,
-          lo: 0,
-          ld: 18,
-          fs: 0,
-          lp: '',
+          dx: -49,
+          dy: -37,
+          lo: -23,
+          ld: 0,
+          fs: 10,
+          lp: 'custom',
           type: 'load'
         }
       ],
       props: {
         voltage: 220,
         wattage: 60
-      }
+      },
+      pinRadius: 5
     },
   ],
 
