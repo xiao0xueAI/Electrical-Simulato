@@ -22,7 +22,17 @@ const Engine = {
       S.simTime = 0;
       // 清理上轮残留的铃声状态
       BellAudio.stop();
-      S.components.forEach(c => { c._ringing = false; });
+      S.components.forEach(c => {
+        c._ringing = false;
+        if (c.type === 'dry_signal') {
+          c.props.energized = false;
+          c.props._contactClosed = false;
+          c.props._closeStart = 0;
+          c.props._pendingPulse = false;
+          c.props._forced = false;
+          c.props.status = '等待脉冲';
+        }
+      });
       // 解锁音频上下文（浏览器自动播放策略要求用户手势）
       BellAudio.resume();
       // Mark static dirty: component images may change (LED lit, relay energized)
@@ -146,12 +156,13 @@ const Engine = {
             addEdge(mkKey(c.id, contactPins[0].id), mkKey(c.id, contactPins[1].id), null, c.id);
           }
         }
-      } else if (pins.length >= 2 && !['battery', 'battery_12v', 'ac_source', 'dc_dc'].includes(t)) {
+      } else if (pins.length >= 2 && !['battery', 'battery_12v', 'ac_source', 'dc_dc', 'dry_signal'].includes(t)) {
         // Default: adjacent pins connected (for 2-pin pass-through components)
         for (let i = 0; i < pins.length - 1; i++) {
           addEdge(mkKey(c.id, pins[i].id), mkKey(c.id, pins[i + 1].id), null, c.id);
         }
       }
+      // dry_signal: 本身不导通，两个 signal 端子被外部短接时才 energized
     });
 
     // Add wire connections
@@ -279,6 +290,7 @@ const Engine = {
       if (t === 'solenoid') return Math.max(1, comp.props.resistance || 200);
       if (t === 'bell_dc') return Math.max(1, comp.props.resistance || 20);
       if (t === 'lamp') { const v = comp.props.voltage||220, w = comp.props.wattage||60; return Math.max(1, (v*v)/w); }
+      if (t === 'dry_signal') return 1e12; // 干接点信号：开路，不耗电
       if (t === 'inductor') return Math.max(0.01, (comp.props.inductance||1)*10);
       if (t === 'thermistor') return Math.max(100, comp.props.resistance || 10000);
       if (t === 'photoresistor') return Math.max(100, comp.props.resistance || 5000);
@@ -696,16 +708,21 @@ const Engine = {
       // Check each path: if a path has only wire/switch elements (no load), it's a direct short
       let hasDirectShort = false;
       let shortPathCount = 0;
+      const shortWires = new Set();
       validPaths.forEach(p => {
         const loadComps = p.comps.filter(id => id !== bat.id && isLoadComp(id));
         if (loadComps.length === 0 && p.R < 0.5) {
           // Path has no load components and very low resistance → direct short
           hasDirectShort = true;
           shortPathCount++;
+          p.wires.forEach(wId => shortWires.add(wId));
         }
       });
 
       if (hasDirectShort) {
+        // Mark the shorted wires red so the fault is visible on the canvas,
+        // not just in the fault panel.
+        shortWires.forEach(wId => { const w = wireMap.get(wId); if (w) w._fault = true; });
         faults.push({ type: 'short', msg: '检测到短路！电池正负极直接相连（无负载）', comp: '' });
         document.getElementById('simCurrent').textContent = '∞ (短路)';
         document.getElementById('simVoltage').textContent = bat.props.voltage + ' V';
@@ -846,6 +863,65 @@ const Engine = {
           relay.props.energized = !!(relay.simCurrent > 1);
         }
       });
+    });
+
+    // dry_signal: 模拟真实台式机 Power SW 逻辑（脉冲边沿触发，非电平触发）
+    //   瞬时脉冲短接(≈0.2~1s) → 翻转电源状态（开/关、唤醒/休眠）
+    //   持续短接(常通)        → 无效，不触发
+    //   已开机时长按(>4s)     → 强制关机
+    S.components.filter(c => c.type === 'dry_signal').forEach(sig => {
+      const pins = sig.pins;
+      let contact = false;
+      if (pins.length >= 2) {
+        const start = mkKey(sig.id, pins[0].id);
+        const end = mkKey(sig.id, pins[1].id);
+        const seen = new Set([start]);
+        const stack = [start];
+        while (stack.length) {
+          const cur = stack.pop();
+          if (cur === end) { contact = true; break; }
+          for (const e of (graph.get(cur) || [])) {
+            if (!seen.has(e.to)) { seen.add(e.to); stack.push(e.to); }
+          }
+        }
+      }
+      const P = sig.props;
+      if (P._contactClosed === undefined) P._contactClosed = false;
+      if (P._closeStart === undefined) P._closeStart = 0;
+      if (P._pendingPulse === undefined) P._pendingPulse = false;
+      if (P._forced === undefined) P._forced = false;
+
+      const HOLD_FORCE = 4.0; // 秒：长按强制关机阈值（主板约 4~5s）
+      const now = S.simTime;
+
+      if (contact && !P._contactClosed) {
+        // 上升沿：接触点闭合，开始计时
+        P._closeStart = now;
+        P._pendingPulse = true;
+        P._forced = false;
+      } else if (!contact && P._contactClosed) {
+        // 下降沿：接触点断开 → 判定本次是否为有效脉冲
+        const dur = now - P._closeStart;
+        if (P._pendingPulse && !P._forced && dur >= 0.1 && dur < HOLD_FORCE) {
+          P.energized = !P.energized; // 有效脉冲 → 翻转电源状态
+        }
+        P._pendingPulse = false;
+        P._forced = false;
+      } else if (contact) {
+        // 持续闭合中
+        const dur = now - P._closeStart;
+        if (P.energized && !P._forced && dur >= HOLD_FORCE) {
+          P.energized = false;       // 已开机时长按 → 强制关机
+          P._forced = true;
+          P._pendingPulse = false;
+        }
+      }
+      P._contactClosed = contact;
+
+      // 状态文字
+      if (P.energized) P.status = '已开机';
+      else if (contact) P.status = P._forced ? '长按强制关机' : '短接中(无效)';
+      else P.status = '等待脉冲';
     });
 
     // 如果所有电源都没有找到通路，显示断路提示

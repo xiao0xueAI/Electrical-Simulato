@@ -314,7 +314,8 @@ const Renderer = {
             lampBright = Math.max(0, Math.min((I_A / Ir) * (I_A / Ir), 1));
           }
           const remote2kLit = c.type === 'rf_remote_2key' && (c.props.pressed1 || c.props.pressed2);
-          const wantOn = (c.props.closed || c.props.pressed || lampLit || remote2kLit) && c.imageOn;
+          const drySignalOn = c.type === 'dry_signal' && c.props.energized;
+          const wantOn = (c.props.closed || c.props.pressed || lampLit || remote2kLit || drySignalOn) && c.imageOn;
           const imgSrc = wantOn ? c.imageOn : c.image;
           const cacheKey = wantOn ? '_imgOnCache' : '_imgCache';
           let img = c[cacheKey];
@@ -829,7 +830,16 @@ const Renderer = {
       const pinR = c.pinRadius || c.props.pinRadius || defaultPinR;
 
       if (connected && wireColor && !isXray) {
-        drawCrimp3D(px, py, wireColor, pinR - 0.5);
+        // 接线后：先画一层线型彩色圆盘（避免被浅银色压接头盖住看不清），
+        // 中心再压一个较小的金属接头，露出彩色外圈以标识线型
+        ctx.beginPath();
+        ctx.arc(px, py, pinR, 0, Math.PI * 2);
+        ctx.fillStyle = wireColor;
+        ctx.fill();
+        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.stroke();
+        drawCrimp3D(px, py, wireColor, pinR * 0.58);
       } else {
         ctx.beginPath();
         ctx.arc(px, py, pinR, 0, Math.PI * 2);
@@ -918,6 +928,7 @@ const Renderer = {
     if (c.type === 'solenoid') return c.props.voltage + 'V';
     if (c.type === 'bell_dc') return S.simRunning && c.simCurrent > 0 ? '叮~叮~' : c.props.voltage + 'V';
     if (c.type === 'lamp') return c.props.wattage + 'W';
+    if (c.type === 'dry_signal') return c.props.status || (c.props.energized ? '已开机' : '等待脉冲');
     if (c.type === 'diode') return c.props.forwardV + 'V';
     if (c.type === 'npn') return 'β=' + c.props.beta;
     if (c.props.behavior === 'relay') return c.props.energized ? 'ON' : 'OFF';

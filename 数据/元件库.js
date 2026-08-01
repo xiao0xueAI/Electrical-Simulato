@@ -216,9 +216,9 @@ const Registry = {
       }
     },
     {
-      type: 'computer',
-      name: '电脑',
-      cat: '电源',
+      type: 'dry_signal',
+      name: '电脑开机键',
+      cat: '开关/按钮',
       icon: '🖥️',
       desc: '',
       w: 300,
@@ -235,7 +235,7 @@ const Registry = {
           ld: 0,
           fs: 15,
           lp: 'custom',
-          type: 'load'
+          type: 'signal'
         },
         {
           id: 'pin1',
@@ -246,12 +246,12 @@ const Registry = {
           ld: 0,
           fs: 15,
           lp: 'custom',
-          type: 'load'
+          type: 'signal'
         }
       ],
       props: {
-        voltage: 220,
-        wattage: 60
+        energized: false,
+        status: '等待脉冲'
       },
       pinRadius: 8.5
     },

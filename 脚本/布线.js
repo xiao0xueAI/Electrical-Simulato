@@ -60,19 +60,46 @@ const WireRouter = {
 
   // Resolve best wire type considering both start and end pin labels
   // Priority: dc_pos/dc_neg > neutral > live (DC-aware inference)
-  resolveWireType(startLabel, endLabel, startType) {
-    const endType = this.detectWireType(endLabel);
-    // If both ends agree on a specific type, use it
-    if (startType === endType && startType !== 'live') return startType;
-    // If one end is DC positive and the other is DC or live, use DC positive
-    if (startType === 'dc_pos' || endType === 'dc_pos') return 'dc_pos';
-    if (startType === 'dc_neg' || endType === 'dc_neg') return 'dc_neg';
-    // If either end is neutral, use neutral
-    if (startType === 'neutral' || endType === 'neutral') return 'neutral';
-    // If either end is ground, use ground
-    if (startType === 'ground' || endType === 'ground') return 'ground';
-    // Fallback: keep original type
-    return startType;
+  // Classify a pin's intended wire type WITH awareness of the OWNING component.
+  // A power source defines the electrical domain: an AC source's pins are
+  // always AC (live/neutral), a DC source's pins are always DC (dc_pos/dc_neg).
+  // Load pins fall back to pure label detection.
+  // This prevents contradictions such as a DC battery '+' being wired to an
+  // 'L'-labeled pin and the wire getting tagged as AC 'live'.
+  _classifyEnd(label, compType) {
+    const l = (label || '').toUpperCase();
+    if (compType === 'ac_source') {
+      if (l === 'L') return 'live';
+      if (l === 'N' || l.includes('NEUTRAL')) return 'neutral';
+      if (l.includes('GND') || l === 'PE' || l === 'E') return 'ground';
+      return 'live';
+    }
+    if (compType === 'battery' || compType === 'battery_12v' || compType === 'dc_dc') {
+      if (l === '+' || l === 'P') return 'dc_pos';
+      if (l === '-' || l.includes('NEG')) return 'dc_neg';
+      if (l.includes('GND') || l === 'PE' || l === 'E') return 'ground';
+      return 'dc_pos';
+    }
+    return this.detectWireType(label);
+  },
+
+  // Resolve best wire type considering BOTH pin labels AND their owning
+  // component types. A source's domain wins over a load's ambiguous label.
+  resolveWireType(startLabel, endLabel, fallback, startCompType, endCompType) {
+    const sType = this._classifyEnd(startLabel, startCompType);
+    const eType = this._classifyEnd(endLabel, endCompType);
+    const SRCS = ['ac_source', 'battery', 'battery_12v', 'dc_dc'];
+    const startIsSrc = SRCS.includes(startCompType);
+    const endIsSrc = SRCS.includes(endCompType);
+    if (startIsSrc && !endIsSrc) return sType;
+    if (endIsSrc && !startIsSrc) return eType;
+    if (startIsSrc && endIsSrc) return sType;
+    if (sType === eType && sType !== 'live') return sType;
+    if (sType === 'dc_pos' || eType === 'dc_pos') return 'dc_pos';
+    if (sType === 'dc_neg' || eType === 'dc_neg') return 'dc_neg';
+    if (sType === 'neutral' || eType === 'neutral') return 'neutral';
+    if (sType === 'ground' || eType === 'ground') return 'ground';
+    return fallback;
   },
 
   // Get the position of the current "drawing head" (last waypoint or start pin/junction)
@@ -108,6 +135,43 @@ const WireRouter = {
     }
   },
 
+  // Build a cached list of snappable pins (world coords). Rebuilt on each
+  // routing start. Avoids scanning all components every mousemove frame.
+  _buildSnapPins() {
+    const arr = [];
+    S.components.forEach(comp => {
+      (comp.pins || []).forEach(pd => {
+        const pp = getPinPos(comp, pd.id);
+        if (pp) arr.push({ x: pp.x, y: pp.y, compId: comp.id, pinId: pd.id });
+      });
+    });
+    this._snapPins = arr;
+  },
+
+  // Shared alignment-snap logic (single source of truth). Mutates `constrained`
+  // in place to lock its free axis onto the nearest pin, and returns a guide
+  // descriptor (or null). Used by both routeClick() and drawTempWire().
+  _alignSnap(head, constrained) {
+    const ALIGN_SNAP = 15;
+    const isHoriz = Math.abs(constrained.y - head.y) < 2;
+    let bestPin = null, bestDist = Infinity;
+    (this._snapPins || []).forEach(pp => {
+      if (Math.abs(pp.x - head.x) < 3 && Math.abs(pp.y - head.y) < 3) return;
+      const d = isHoriz ? Math.abs(constrained.x - pp.x) : Math.abs(constrained.y - pp.y);
+      if (d < bestDist) { bestDist = d; bestPin = pp; }
+    });
+    if (bestPin && bestDist < ALIGN_SNAP) {
+      if (isHoriz) {
+        constrained.x = bestPin.x;
+        return { axis: 'v', pos: bestPin.x, dist: bestDist, isSnap: true };
+      } else {
+        constrained.y = bestPin.y;
+        return { axis: 'h', pos: bestPin.y, dist: bestDist, isSnap: true };
+      }
+    }
+    return null;
+  },
+
   start(pin) {
     this.active = true;
     this.phase = 'routing';
@@ -130,6 +194,7 @@ const WireRouter = {
       }
     }
     this.setWireType(this.wireType);
+    this._buildSnapPins();
     document.getElementById('wireHint').style.display = 'flex';
   },
 
@@ -150,6 +215,7 @@ const WireRouter = {
       this.wireType = tapWire.wireType || 'live';
     }
     this.setWireType(this.wireType);
+    this._buildSnapPins();
     document.getElementById('wireHint').style.display = 'flex';
     requestRender();
   },
@@ -225,23 +291,8 @@ const WireRouter = {
     // Clicked on blank space → add a waypoint
     const constrained = this._constrainOrtho(head, canvasPos);
 
-    // Alignment snap to nearest pin axis (only free axis, stay orthogonal)
-    const ALIGN_SNAP = 15;
-    const isHoriz = Math.abs(constrained.y - head.y) < 2;
-    let bestPin = null, bestDist = Infinity;
-    S.components.forEach(comp => {
-      (comp.pins || []).forEach(pd => {
-        const pp = getPinPos(comp, pd.id);
-        if (pp && !(Math.abs(pp.x - head.x) < 3 && Math.abs(pp.y - head.y) < 3)) {
-          const d = isHoriz ? Math.abs(canvasPos.x - pp.x) : Math.abs(canvasPos.y - pp.y);
-          if (d < bestDist) { bestDist = d; bestPin = pp; }
-        }
-      });
-    });
-    if (bestPin && bestDist < ALIGN_SNAP) {
-      if (isHoriz) constrained.x = bestPin.x;
-      else constrained.y = bestPin.y;
-    }
+    // Alignment snap to nearest pin axis (shared logic)
+    this._alignSnap(head, constrained);
 
     // Only add waypoint if it actually moves from head
     if (Math.abs(constrained.x - head.x) > 1 || Math.abs(constrained.y - head.y) > 1) {
@@ -280,6 +331,7 @@ const WireRouter = {
     this.routeWaypoints = [];
     this.lastDir = null;
     this.pinNaturalDir = null;
+    this._snapPins = [];
     document.getElementById('wireHint').style.display = 'none';
     requestRender();
   },
@@ -307,8 +359,13 @@ const WireRouter = {
 
       // Determine wire type from target pin
       const endPinDef = c2 ? c2.pins.find(p => p.id === endPin.pin) : null;
-      const endType = this.detectWireType(endPinDef ? endPinDef.label : '');
-      const resolvedType = endType !== 'live' ? endType : this.wireType;
+      const resolvedType = this.resolveWireType(
+        '',
+        endPinDef ? endPinDef.label : '',
+        this.wireType,
+        null,
+        c2 ? c2.type : null
+      );
 
       const branchWire = {
         id: S.nextWireId++,
@@ -385,7 +442,9 @@ const WireRouter = {
       const resolvedType = this.resolveWireType(
         startPinDef ? startPinDef.label : '',
         '',
-        this.wireType
+        this.wireType,
+        c1 ? c1.type : null,
+        null
       );
 
       const branchWire = {
@@ -446,6 +505,12 @@ const WireRouter = {
     const c1 = getComp(sp.comp), c2 = getComp(endPin.comp);
     const p1 = getPinPos(c1, sp.pin), p2 = getPinPos(c2, endPin.pin);
     const head = this._getHeadPos();
+    // Guard against degenerate (near-zero length) wires from a misclick
+    if (Math.hypot(p2.x - p1.x, p2.y - p1.y) < S.grid) {
+      UI.toast('距离过短，未连接', 'warning');
+      this.cancel();
+      return;
+    }
     // Build final waypoints: existing route waypoints only
     let waypoints = this.routeWaypoints.filter(wp =>
       !(Math.abs(wp.x - p2.x) < 2 && Math.abs(wp.y - p2.y) < 2)
@@ -474,7 +539,9 @@ const WireRouter = {
     const resolvedType = this.resolveWireType(
       startPinDef ? startPinDef.label : '',
       endPinDef ? endPinDef.label : '',
-      this.wireType
+      this.wireType,
+      c1 ? c1.type : null,
+      c2 ? c2.type : null
     );
 
     const wire = {
@@ -763,34 +830,8 @@ const WireRouter = {
     // ===== Alignment Guides (标尺线) — snap to pin X/Y axes =====
     let _alignGuides = []; // { axis:'v'|'h', pos, dist, isSnap }
     if (!snapTarget) {
-      const allPins = [];
-      S.components.forEach(comp => {
-        (comp.pins || []).forEach(pd => {
-          const pp = getPinPos(comp, pd.id);
-          if (pp && !(Math.abs(pp.x - head.x) < 3 && Math.abs(pp.y - head.y) < 3)) {
-            allPins.push({ ...pp, compId: comp.id, pinId: pd.id });
-          }
-        });
-      });
-      const ALIGN_SNAP = 15;
-      // Only show guide for the SINGLE closest pin on the free axis (not all pins).
-      // Horizontal segment (Y locked to head): snap X only.
-      // Vertical segment (X locked to head): snap Y only.
-      const isHoriz = Math.abs(constrained.y - head.y) < 2;
-      let bestPin = null, bestDist = Infinity;
-      allPins.forEach(pp => {
-        const d = isHoriz ? Math.abs(m.x - pp.x) : Math.abs(m.y - pp.y);
-        if (d < bestDist) { bestDist = d; bestPin = pp; }
-      });
-      if (bestPin && bestDist < ALIGN_SNAP) {
-        if (isHoriz) {
-          constrained.x = bestPin.x;
-          _alignGuides.push({ axis: 'v', pos: bestPin.x, dist: bestDist, isSnap: true });
-        } else {
-          constrained.y = bestPin.y;
-          _alignGuides.push({ axis: 'h', pos: bestPin.y, dist: bestDist, isSnap: true });
-        }
-      }
+      const g = this._alignSnap(head, constrained);
+      if (g) _alignGuides.push(g);
     }
 
     // Draw all committed segments (3D pipe, full opacity)
@@ -831,11 +872,38 @@ const WireRouter = {
     }
 
     // Draw current preview segment (more opaque when snapped to pin)
-    const previewPoints = [head, constrained];
+    // Build an ORTHOGONAL (right-angle) preview path — never a direct diagonal line.
+    // Mirrors the auto-corner logic in complete() so what you see while dragging
+    // matches the committed wire exactly.
+    let previewPoints;
+    if (snapTarget || snapWireTap) {
+      const hg = S.grid;
+      const dx = Math.abs(head.x - constrained.x);
+      const dy = Math.abs(head.y - constrained.y);
+      if (dx > hg && dy > hg) {
+        // Insert a 90° corner: bend instead of going diagonally
+        // Junction→pin always bends horizontal-first; pin→pin follows the pin's edge.
+        const useHorizFirst = this.junctionRef ? true : (this.pinNaturalDir === 'h');
+        const corner = useHorizFirst
+          ? { x: Math.round(constrained.x / hg) * hg, y: head.y }
+          : { x: head.x, y: Math.round(constrained.y / hg) * hg };
+        previewPoints = [head, corner, constrained];
+      } else {
+        previewPoints = [head, constrained];
+      }
+    } else {
+      previewPoints = [head, constrained];
+    }
     drawPipe3D(previewPoints, color, this.WireWidth, (snapTarget || snapWireTap) ? 0.8 : 0.4);
 
-    // Distance label on preview segment
-    const segLen = Math.round(Math.sqrt((constrained.x - head.x) ** 2 + (constrained.y - head.y) ** 2));
+    // Distance label on preview path (total polyline length)
+    let segLen = 0;
+    for (let i = 0; i < previewPoints.length - 1; i++) {
+      segLen += Math.round(Math.hypot(
+        previewPoints[i + 1].x - previewPoints[i].x,
+        previewPoints[i + 1].y - previewPoints[i].y
+      ));
+    }
     if (segLen > 20) {
       const midX = (head.x + constrained.x) / 2;
       const midY = (head.y + constrained.y) / 2;
@@ -919,7 +987,10 @@ const WireRouter = {
 
   drawCurrentFlow(points, current, wireColor, wire) {
     if (!points || points.length < 2) return;
-    const speed = Math.min(Math.abs(current) / 4, 5);
+    // Speed now reflects current magnitude: bigger current flows visibly faster,
+    // but with a small base so even tiny currents keep moving, and a lower cap than
+    // before so it never looks frantic. (current is in mA)
+    const speed = Math.min(0.5 + Math.abs(current) / 400, 2.4);
     const isXray = false;
     const wt = wire ? (wire.wireType || 'live') : 'live';
     const isDC = wt === 'dc_pos' || wt === 'dc_neg';

@@ -53,40 +53,83 @@ function hexToRGBA(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// Draw a 3D pipe along an orthogonal polyline path
-// Optimized: 3 layers (shadow + body + highlight), dropped specular for performance
-function drawPipe3D(points, color, width, alpha) {
+// Draw a realistic insulated wire along an orthogonal polyline path.
+// Style: thin cylindrical cable with drop shadow + rim highlight.
+// For ground wires, draws yellow/green striped insulation.
+function drawPipe3D(points, color, width, alpha, wireType) {
   if (points.length < 2) return;
-  const r = parseInt(color.slice(1, 3), 16);
-  const g = parseInt(color.slice(3, 5), 16);
-  const b = parseInt(color.slice(5, 7), 16);
-  const a = alpha || 1;
+  const a = alpha == null ? 1 : alpha;
+  const w = width || 4;
+  const isGround = wireType === 'ground';
 
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-
-  // Layer 1: Outer shadow (darker, wider) + Layer 2: Main body — combined stroke
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  // Shadow pass
-  ctx.globalAlpha = a * 0.3;
-  ctx.strokeStyle = `rgba(${Math.max(0,r-70)},${Math.max(0,g-70)},${Math.max(0,b-70)},1)`;
-  ctx.lineWidth = width + 2.5;
-  ctx.stroke();
-
-  // Body pass
-  ctx.globalAlpha = a;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.stroke();
-
-  // Highlight pass (lighter, thinner)
+  // 1) Drop shadow (slightly offset, darker) — gives the wire lift off the board
+  ctx.save();
   ctx.globalAlpha = a * 0.35;
-  ctx.strokeStyle = `rgba(${Math.min(255,r+80)},${Math.min(255,g+80)},${Math.min(255,b+80)},1)`;
-  ctx.lineWidth = Math.max(1, width * 0.45);
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = w + 1.6;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x + 0.8, points[0].y + 0.8);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x + 0.8, points[i].y + 0.8);
   ctx.stroke();
+  ctx.restore();
+
+  // 2) Main insulation body
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.lineWidth = w;
+  if (isGround) {
+    // Green base for ground, then yellow stripes on top
+    ctx.strokeStyle = '#43a047';
+  } else {
+    ctx.strokeStyle = color;
+  }
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.stroke();
+  ctx.restore();
+
+  // 3) Ground: yellow diagonal stripes over green base
+  if (isGround) {
+    ctx.save();
+    ctx.globalAlpha = a * 0.95;
+    ctx.strokeStyle = '#fdd835';
+    ctx.lineWidth = w * 0.55;
+    const segLen = 9, gapLen = 9;
+    ctx.setLineDash([segLen, gapLen]);
+    ctx.lineDashOffset = 0;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // 4) Cylindrical rim highlight (top-left sheen) — makes it look round
+  ctx.save();
+  ctx.globalAlpha = a * 0.55;
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = Math.max(0.8, w * 0.22);
+  ctx.beginPath();
+  ctx.moveTo(points[0].x - 0.6, points[0].y - 0.6);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x - 0.6, points[i].y - 0.6);
+  ctx.stroke();
+  ctx.restore();
+
+  // 5) Bottom-right darker edge for roundness
+  ctx.save();
+  ctx.globalAlpha = a * 0.35;
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = Math.max(0.8, w * 0.22);
+  ctx.beginPath();
+  ctx.moveTo(points[0].x + 0.6, points[0].y + 0.6);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x + 0.6, points[i].y + 0.6);
+  ctx.stroke();
+  ctx.restore();
 
   ctx.globalAlpha = 1;
 }
@@ -112,39 +155,47 @@ function _getCrimpGradient(x, y, color, radius) {
   return stops;
 }
 
-// Draw a 3D "crimp" connector at endpoint (pin junction)
-// Optimized: use cached color computation, fewer save/restore calls
+// Draw a small metallic crimp terminal where the wire meets the pin.
+// Looks like a real wire ferrule / spade connector, not a colored candy bead.
 function drawCrimp3D(x, y, color, radius) {
-  const cr = radius || 4.5;
-  const sc = _getCrimpGradient(x, y, color, cr);
+  const cr = (radius || 4.5) * 0.85; // slightly smaller than the pin
 
-  // Shadow ring
+  // Dark pocket shadow
   ctx.beginPath();
-  ctx.arc(x, y, cr + 1, 0, Math.PI * 2);
-  ctx.fillStyle = sc.shadow;
+  ctx.arc(x, y, cr + 0.8, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.fill();
 
-  // Main body - radial gradient for 3D sphere effect
-  const grad = ctx.createRadialGradient(x - cr*0.3, y - cr*0.3, 0, x, y, cr);
-  grad.addColorStop(0, sc.light);
-  grad.addColorStop(0.6, sc.main);
-  grad.addColorStop(1, sc.dark);
+  // Metal sleeve body (brushed silver / tin-plated copper look)
+  const grad = ctx.createRadialGradient(x - cr*0.25, y - cr*0.25, cr*0.1, x, y, cr);
+  grad.addColorStop(0, '#e8e8e8');
+  grad.addColorStop(0.55, '#9e9e9e');
+  grad.addColorStop(1, '#555555');
   ctx.beginPath();
   ctx.arc(x, y, cr, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Specular dot
+  // Thin wire-color ring where insulation enters the crimp (subtle hint)
   ctx.beginPath();
-  ctx.arc(x - cr*0.25, y - cr*0.25, cr * 0.3, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.arc(x, y, cr * 0.7, 0, Math.PI * 2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, cr * 0.22);
+  ctx.globalAlpha = 0.5;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Tiny highlight
+  ctx.beginPath();
+  ctx.arc(x - cr*0.25, y - cr*0.25, cr * 0.2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
   ctx.fill();
 
-  // Metallic rim
+  // Outer rim
   ctx.beginPath();
   ctx.arc(x, y, cr, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 0.8;
   ctx.stroke();
 }
 
