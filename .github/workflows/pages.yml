@@ -27,6 +27,13 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
+      - name: Inject cache-busting version
+        # Replace the __VER__ placeholder in index.html with the git commit
+        # short hash so every deploy forces browsers/CDN to fetch fresh assets.
+        run: |
+          VER="$(git rev-parse --short HEAD)"
+          sed -i "s/__VER__/${VER}/g" index.html
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
