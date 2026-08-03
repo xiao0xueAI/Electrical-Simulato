@@ -1,4 +1,11 @@
 // ==================== Section 6: Wiring System (Segmented Orthogonal) ====================
+// Tap/branch thresholds (px). A branch (T-junction) is created ONLY on an
+// explicit click near an existing wire. Hovering never auto-snaps the preview
+// onto a wire, so the user can move freely across wires while heading to a
+// terminal without the line "jumping"/skewing onto the wire.
+const WIRE_TAP_HOVER = 14; // show a subtle "tap target" hint when cursor is near a wire
+const WIRE_TAP_CLICK = 14; // clicking within this distance of a wire creates a T-junction
+
 const WireRouter = {
   active: false,
   phase: 'idle',        // 'idle' | 'routing'
@@ -279,11 +286,17 @@ const WireRouter = {
       return;
     }
 
-    // Clicked on existing wire while routing from a pin → T-junction (Pin → Wire)
+    // Clicked on existing wire while routing from a pin → T-junction (Pin → Wire).
+    // This only fires on a deliberate click near a wire (within WIRE_TAP_CLICK),
+    // so the user can pass freely over wires en route to a terminal. The junction
+    // point is snapped to the grid so the resulting branch stays orthogonal.
     if (this.startPin) {
-      const wireTap = this.findWirePointAt(canvasPos.x, canvasPos.y, 22);
+      const wireTap = this.findWirePointAt(canvasPos.x, canvasPos.y, WIRE_TAP_CLICK);
       if (wireTap) {
-        this.complete({ junction: wireTap.point, tapWireId: wireTap.wire.id });
+        const hg = S.grid;
+        const jx = Math.round(wireTap.point.x / hg) * hg;
+        const jy = Math.round(wireTap.point.y / hg) * hg;
+        this.complete({ junction: { x: jx, y: jy }, tapWireId: wireTap.wire.id });
         return;
       }
     }
@@ -809,19 +822,20 @@ const WireRouter = {
     const nearPin = findPinAt(m.x, m.y);
     const isValidEndPin = nearPin &&
       !(this.startPin && nearPin.comp === this.startPin.comp && nearPin.pin === this.startPin.pin);
-    let constrained, snapTarget = null, snapWireTap = null;
+    let constrained, snapTarget = null, hoverTap = null;
     if (isValidEndPin) {
       const ec = getComp(nearPin.comp);
       const ep = ec ? getPinPos(ec, nearPin.pin) : null;
       if (ep) { constrained = { x: ep.x, y: ep.y }; snapTarget = ep; }
     }
-    // When routing from a pin, also snap to existing wires for T-junction
+    // Show a subtle "tap target" hint when the cursor passes near an existing
+    // wire, but DO NOT snap the preview onto it. The preview stays orthogonal so
+    // the user can move freely across wires while heading to a terminal. A branch
+    // (T-junction) is only created on an explicit CLICK near the wire — see
+    // routeClick(). This stops the line from "jumping"/skewing onto a wire.
     if (!snapTarget && this.startPin) {
-      const wireTap = this.findWirePointAt(m.x, m.y, 22);
-      if (wireTap) {
-        constrained = { x: wireTap.point.x, y: wireTap.point.y };
-        snapWireTap = wireTap;
-      }
+      const wireTap = this.findWirePointAt(m.x, m.y, WIRE_TAP_HOVER);
+      if (wireTap) hoverTap = wireTap;
     }
     if (!constrained) {
       constrained = this._constrainOrtho(head, m);
@@ -859,14 +873,16 @@ const WireRouter = {
       ctx.restore();
     }
 
-    // Draw wire snap indicator when routing from pin to existing wire (T-junction)
-    if (snapWireTap) {
+    // Draw a subtle "tap target" hint when hovering near an existing wire.
+    // This is only a visual cue — it does NOT merge; merging happens on click.
+    if (hoverTap) {
       ctx.save();
+      ctx.globalAlpha = 0.45;
       ctx.beginPath();
-      ctx.arc(constrained.x, constrained.y, 5.5, 0, Math.PI * 2);
+      ctx.arc(hoverTap.point.x, hoverTap.point.y, 6, 0, Math.PI * 2);
       ctx.fillStyle = '#1a1a2e'; ctx.fill();
       ctx.beginPath();
-      ctx.arc(constrained.x, constrained.y, 3.5, 0, Math.PI * 2);
+      ctx.arc(hoverTap.point.x, hoverTap.point.y, 3.5, 0, Math.PI * 2);
       ctx.fillStyle = '#39d2c0'; ctx.fill();
       ctx.restore();
     }
@@ -876,7 +892,7 @@ const WireRouter = {
     // Mirrors the auto-corner logic in complete() so what you see while dragging
     // matches the committed wire exactly.
     let previewPoints;
-    if (snapTarget || snapWireTap) {
+    if (snapTarget) {
       const hg = S.grid;
       const dx = Math.abs(head.x - constrained.x);
       const dy = Math.abs(head.y - constrained.y);
@@ -894,7 +910,7 @@ const WireRouter = {
     } else {
       previewPoints = [head, constrained];
     }
-    drawPipe3D(previewPoints, color, this.WireWidth, (snapTarget || snapWireTap) ? 0.8 : 0.4);
+    drawPipe3D(previewPoints, color, this.WireWidth, (snapTarget || hoverTap) ? 0.55 : 0.4);
 
     // Distance label on preview path (total polyline length)
     let segLen = 0;
