@@ -6,6 +6,45 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>ElecSim Studio Pro v2.0 - QIACHIP 电工电路仿真平台</title>
   <link rel="stylesheet" href="样式/样式.css?v=__VER__">
+  <!-- 前台界面开关：必须在所有脚本之前同步执行，DOMContentLoaded 时再由 脚本/初始化.js 兜底 -->
+  <script>
+  (function(){
+    // 标记各功能是否关闭（由编辑器写入 localStorage 缓存，绕过 server.py 写入时延）
+    var FLAGS = null;
+    try { FLAGS = JSON.parse(localStorage.getItem('elecsim_uiconfig') || 'null'); } catch(e){}
+    if (FLAGS && typeof FLAGS === 'object') {
+      // 立即隐藏已存在的元素
+      function hideNow(){
+        if (FLAGS.uploadProduct === false) {
+          var b = document.querySelector('.product-btn'); if (b) b.style.display='none';
+          var m = document.getElementById('productModal'); if (m) m.style.display='none';
+        }
+        if (FLAGS.importJSON === false) document.querySelectorAll('[data-feature="importJSON"]').forEach(function(e){e.style.display='none';});
+        if (FLAGS.exportJSON === false) document.querySelectorAll('[data-feature="exportJSON"]').forEach(function(e){e.style.display='none';});
+        if (FLAGS.saveBrowser === false) document.querySelectorAll('[data-feature="saveBrowser"]').forEach(function(e){e.style.display='none';});
+        if (FLAGS.templates === false) {
+          document.querySelectorAll('[data-feature="templates"]').forEach(function(e){e.style.display='none';});
+          var t = document.getElementById('tabTemplates'); if (t) t.style.display='none';
+        }
+      }
+      hideNow();
+      // DOMContentLoaded 时再隐藏一次
+      document.addEventListener('DOMContentLoaded', hideNow);
+      // 再用 setTimeout 兜底（防止其他脚本动态创建元素）
+      setTimeout(hideNow, 50);
+      setTimeout(hideNow, 500);
+    }
+    // 暴露 setter 给编辑器，编辑器切换开关时直接更新缓存，无需走 server.py
+    window.__setUIFlag = function(key, val){
+      try {
+        var cur = {};
+        try { cur = JSON.parse(localStorage.getItem('elecsim_uiconfig') || '{}') || {}; } catch(e){ cur = {}; }
+        cur[key] = val;
+        localStorage.setItem('elecsim_uiconfig', JSON.stringify(cur));
+      } catch(e){}
+    };
+  })();
+  </script>
 </head>
 <body>
 <div class="app" id="app">
@@ -52,15 +91,15 @@
       <div class="rec-dot"></div>
       <span class="rec-time" id="recTime">00:00</span>
     </div>
-    <button class="tbtn product-btn" onclick="ElecSim.UI.showModal('productModal')">&#128268; 上传产品</button>
+    <button class="tbtn product-btn" data-feature="uploadProduct" onclick="ElecSim.UI.showModal('productModal')">&#128268; 上传产品</button>
     <div style="flex:1"></div>
     <div class="dropdown">
       <button class="tbtn" onclick="ElecSim.UI.toggleDropdown('fileMenu')">&#128190; 文件</button>
       <div class="dropdown-menu" id="fileMenu" style="right:0;left:auto;">
-        <div class="dropdown-item" onclick="ElecSim.Persistence.save()">&#128190; 保存到浏览器</div>
-        <div class="dropdown-item" onclick="ElecSim.Persistence.load()">&#128194; 从浏览器加载</div>
-        <div class="dropdown-item" onclick="ElecSim.Persistence.exportJSON()">&#128230; 导出JSON</div>
-        <div class="dropdown-item" onclick="document.getElementById('importInput').click()">&#128229; 导入JSON</div>
+        <div class="dropdown-item" data-feature="saveBrowser" onclick="ElecSim.Persistence.save()">&#128190; 保存到浏览器</div>
+        <div class="dropdown-item" data-feature="saveBrowser" onclick="ElecSim.Persistence.load()">&#128194; 从浏览器加载</div>
+        <div class="dropdown-item" data-feature="exportJSON" onclick="ElecSim.Persistence.exportJSON()">&#128230; 导出JSON</div>
+        <div class="dropdown-item" data-feature="importJSON" onclick="document.getElementById('importInput').click()">&#128229; 导入JSON</div>
       </div>
     </div>
     <input type="file" id="importInput" accept=".json" style="display:none" onchange="ElecSim.Persistence.importJSON(this.files[0])">
@@ -74,7 +113,7 @@
       <div class="sidebar-tabs">
         <div class="sidebar-tab active" data-tab="components" onclick="ElecSim.UI.switchTab(this,'components')">元件库</div>
         <div class="sidebar-tab" data-tab="products" onclick="ElecSim.UI.switchTab(this,'products')">产品</div>
-        <div class="sidebar-tab" data-tab="templates" onclick="ElecSim.UI.switchTab(this,'templates')">模板</div>
+        <div class="sidebar-tab" data-tab="templates" data-feature="templates" onclick="ElecSim.UI.switchTab(this,'templates')">模板</div>
       </div>
 
       <!-- Tab: Components -->

@@ -185,11 +185,11 @@ const UI = {
       row.querySelector('button').addEventListener('click', () => { comp.props.blown = !comp.props.blown; S.dirty = true; this.showProps(comp); markStaticDirty(); });
       content.appendChild(row);
     }
-    else if (comp.type === 'relay5' || comp.type === 'relay8' || comp.type === 'contactor' || comp.type === 'dry_relay') {
+    else if (comp.type === 'relay5' || comp.type === 'relay8' || comp.type === 'contactor' || comp.type === 'dry_relay' || comp.type === 'bt_relay') {
       makeRow('线圈电压 (V)', 'coilVoltage', comp.props.coilVoltage);
       makeRow('触点额定 (A)', 'maxCurrent', comp.props.maxCurrent);
-      // 干接点控制器专用：模式选择（循环切换）
-      if (comp.type === 'dry_relay') {
+      // 干接点/蓝牙控制器专用：模式选择（循环切换）
+      if (comp.type === 'dry_relay' || comp.type === 'bt_relay') {
         const modeLabels = { 'none':'纯线圈', 'momentary':'点动', 'toggle':'自锁', 'interlock':'互锁' };
         const modeRow = document.createElement('div'); modeRow.className = 'prop-row';
         const nextMode = { 'none':'momentary', 'momentary':'toggle', 'toggle':'interlock', 'interlock':'momentary' }[comp.props.mode] || 'momentary';

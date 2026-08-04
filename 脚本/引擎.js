@@ -132,7 +132,7 @@ const Engine = {
         if (!c.props.pressed && pins.length >= 2) {
           addEdge(mkKey(c.id, pins[0].id), mkKey(c.id, pins[1].id), null, c.id);
         }
-      } else if (t === 'relay5' || t === 'relay8' || t === 'contactor' || t === 'dry_relay') {
+      } else if (t === 'relay5' || t === 'relay8' || t === 'contactor' || t === 'dry_relay' || t === 'bt_relay') {
         const coilPins = pins.filter(p => p.type === 'coil');
         if (coilPins.length >= 2) {
           addEdge(mkKey(c.id, coilPins[0].id), mkKey(c.id, coilPins[1].id), null, c.id);
@@ -296,7 +296,7 @@ const Engine = {
       if (t === 'photoresistor') return Math.max(100, comp.props.resistance || 5000);
       if (t === 'capacitor') return 1e9; // DC steady state: open circuit (does NOT conduct)
       if (t === 'npn') return 500;
-      if (t === 'relay5' || t === 'relay8' || t === 'contactor' || t === 'dry_relay') return comp.props.coilResistance || 10;
+      if (t === 'relay5' || t === 'relay8' || t === 'contactor' || t === 'dry_relay' || t === 'bt_relay') return comp.props.coilResistance || 10;
       if (t === 'switch' || t === 'spst' || t === 'breaker') return 0.05; // realistic contact resistance (~50mΩ)
       if (t === 'push_no' || t === 'push_nc') return 0.05;
       if (t === 'spdt' || t === 'rotary') return 0.05;
@@ -487,7 +487,7 @@ const Engine = {
         for (const compId of p.comps) {
           if (compId === bat.id) continue;
           const comp = S.components.find(c => c.id === compId);
-          if (!comp || comp.type !== 'dry_relay') continue;
+          if (!comp || (comp.type !== 'dry_relay' && comp.type !== 'bt_relay')) continue;
           // Remote modes: energized controlled by RF signals, not coil current.
           // Skipping coil energize here prevents the coil current from overriding
           // remote toggles (otherwise toggle flips energized=false → coil sets it back to true)
@@ -515,31 +515,66 @@ const Engine = {
     // 433MHz modules have their own internal power; RF signals are independent of coil current.
     const allRemotes1k = S.components.filter(c => c.type === 'rf_remote');
     const allRemotes2k = S.components.filter(c => c.type === 'rf_remote_2key');
+    const allBtRemotes = S.components.filter(c => c.type === 'bt_remote');
 
-    S.components.filter(c => c.type === 'dry_relay').forEach(relay => {
+    // 433 遥控器驱动 dry_relay；蓝牙遥控器驱动 bt_relay（信号按类型隔离，互不干扰）
+    S.components.filter(c => c.type === 'dry_relay' || c.type === 'bt_relay').forEach(relay => {
+      const remotes = (relay.type === 'bt_relay') ? allBtRemotes : [...allRemotes1k, ...allRemotes2k];
       const mode = relay.props.mode;
       // mode='none' or undefined → driven purely by coil current (handled by step 1 above)
       if (mode === 'none' || mode === undefined) return;
 
-      // Collect RF signals from all remotes
+      // Collect signals from all remotes matching this relay's signal type
+      // (433 遥控器 → dry_relay；蓝牙遥控器 → bt_relay；信号按类型隔离，互不干扰)
       let signalOn = false, signalPulse = false;
       const allChannelPresses = [];
-      for (const r of allRemotes1k) {
-        if (r.props.pressed) signalOn = true;
-        if (r.props.pressed && !r._wasPressed) signalPulse = true;
-        const ch = r.props.channel || 'A';
-        allChannelPresses.push({ channel: ch, pressed: r.props.pressed, pulse: r.props.pressed && !r._wasPressed });
-        r._wasPressed = r.props.pressed;
-      }
-      for (const r of allRemotes2k) {
-        if (r.props.pressed1 || r.props.pressed2) signalOn = true;
-        const p1Pulse = r.props.pressed1 && !r._wasPressed1;
-        const p2Pulse = r.props.pressed2 && !r._wasPressed2;
-        if (p1Pulse || p2Pulse) signalPulse = true;
-        allChannelPresses.push({ channel: '1', pressed: r.props.pressed1, pulse: p1Pulse });
-        allChannelPresses.push({ channel: '2', pressed: r.props.pressed2, pulse: p2Pulse });
-        r._wasPressed1 = r.props.pressed1;
-        r._wasPressed2 = r.props.pressed2;
+      for (const r of remotes) {
+        if (r.type === 'rf_remote_2key') {
+          // 433 两键遥控器：ON/OFF 双键 → 通道 1/2
+          if (r.props.pressed1 || r.props.pressed2) signalOn = true;
+          const p1Pulse = r.props.pressed1 && !r._wasPressed1;
+          const p2Pulse = r.props.pressed2 && !r._wasPressed2;
+          if (p1Pulse || p2Pulse) signalPulse = true;
+          allChannelPresses.push({ channel: '1', pressed: r.props.pressed1, pulse: p1Pulse });
+          allChannelPresses.push({ channel: '2', pressed: r.props.pressed2, pulse: p2Pulse });
+          r._wasPressed1 = r.props.pressed1;
+          r._wasPressed2 = r.props.pressed2;
+          continue;
+        }
+        const btns = r.buttons || [];
+        if (btns.length === 0) {
+          // 旧单键遥控器（无 buttons 字段）兜底
+          if (r.props.pressed) signalOn = true;
+          if (r.props.pressed && !r._wasPressed) signalPulse = true;
+          const ch = r.props.channel || 'A';
+          allChannelPresses.push({ channel: ch, pressed: r.props.pressed, pulse: r.props.pressed && !r._wasPressed });
+          r._wasPressed = r.props.pressed;
+          continue;
+        }
+        if (!r.props.pressedButtons) r.props.pressedButtons = btns.map(() => false);
+        if (!r._wasPressedBtns) r._wasPressedBtns = btns.map(() => false);
+        if (!r._lastRfPulseSeq) r._lastRfPulseSeq = btns.map(() => 0);
+        const isToggleRemote = r.pressMode === 'toggle';
+        for (let i = 0; i < btns.length; i++) {
+          const b = btns[i];
+          const ch = b.channel || 'A';
+          const pressed = !!r.props.pressedButtons[i];
+          const wasPressed = r._wasPressedBtns[i];
+          r._wasPressedBtns[i] = pressed;
+          if (isToggleRemote) {
+            // 点按切换模式：不靠持续 pressed 驱动，而是每次点击的脉冲序列号(_rfPulseSeq[i])变化
+            const seq = (r.props._rfPulseSeq && r.props._rfPulseSeq[i]) || 0;
+            const seqChanged = seq !== r._lastRfPulseSeq[i];
+            r._lastRfPulseSeq[i] = seq;
+            if (seqChanged) { signalOn = true; signalPulse = true; }
+            allChannelPresses.push({ channel: ch, pressed: seqChanged, pulse: seqChanged });
+          } else {
+            // 按住模式：pressed 持续驱动通电
+            if (pressed) signalOn = true;
+            if (pressed && !wasPressed) signalPulse = true;
+            allChannelPresses.push({ channel: ch, pressed, pulse: pressed && !wasPressed });
+          }
+        }
       }
 
       const prevEnergized = relay.props.energized;
@@ -659,7 +694,7 @@ const Engine = {
           const comp = S.components.find(c => c.id === compId);
           if (!comp) continue;
           // 继电器电阻需区分：线圈(AC供电)用coilResistance，触点(DC导通)用contactR
-          if (comp.type === 'dry_relay' && sourceType !== 'ac') {
+          if ((comp.type === 'dry_relay' || comp.type === 'bt_relay') && sourceType !== 'ac') {
             R += comp.props.contactR || 0.02; // DC 电路：干接点导通电阻 ~20mΩ
           } else {
             R += getR(comp);
@@ -702,7 +737,7 @@ const Engine = {
         // Load components that consume power (not just conduct)
         return ['resistor', 'led', 'diode', 'motor_dc', 'buzzer', 'solenoid', 'lamp', 'bell_dc',
                 'capacitor', 'inductor', 'thermistor', 'photoresistor', 'npn',
-                'relay5', 'relay8', 'contactor', 'dry_relay', 'ac_source', 'dc_dc'].includes(t);
+                'relay5', 'relay8', 'contactor', 'dry_relay', 'bt_relay', 'ac_source', 'dc_dc'].includes(t);
       };
 
       // Check each path: if a path has only wire/switch elements (no load), it's a direct short
@@ -807,7 +842,7 @@ const Engine = {
 
       // ==================== E5: 继电器触点过流告警 ====================
       S.components.forEach(comp => {
-        if (comp.type === 'dry_relay' || comp.type === 'relay5' || comp.type === 'relay8' || comp.type === 'contactor') {
+        if (comp.type === 'dry_relay' || comp.type === 'bt_relay' || comp.type === 'relay5' || comp.type === 'relay8' || comp.type === 'contactor') {
           const rated = comp.props.maxCurrent || comp.props.contactRating || 10; // A
           const I_A = (comp.simCurrent || 0) / 1000;
           if (I_A > rated) {
@@ -857,7 +892,7 @@ const Engine = {
       });
 
       // 干接点：模式'none'由线圈电流驱动（断电释放），遥控模式已在 pre-pass 处理
-      S.components.filter(c => c.type === 'dry_relay').forEach(relay => {
+      S.components.filter(c => c.type === 'dry_relay' || c.type === 'bt_relay').forEach(relay => {
         const mode = relay.props.mode;
         if (mode === 'none' || mode === undefined) {
           relay.props.energized = !!(relay.simCurrent > 1);

@@ -1,4 +1,29 @@
 // ==================== Section 15: Init ====================
+// 前台界面开关：键名与 数据/产品库.js 的 QIACHIP.uiConfig 一一对应，
+// 值为该开关关闭时要隐藏的元素选择器列表。
+const UI_FLAG_FEATURES = {
+  uploadProduct: ['.product-btn', '#productModal'], // 顶部「上传产品」按钮 + 上传弹窗
+  importJSON: ['[data-feature="importJSON"]'],       // 文件菜单「导入JSON」
+  exportJSON: ['[data-feature="exportJSON"]'],       // 文件菜单「导出JSON」
+  saveBrowser: ['[data-feature="saveBrowser"]'],      // 文件菜单「保存到/从浏览器加载」
+  templates: ['[data-feature="templates"]', '#tabTemplates'] // 左侧栏「电路模板」标签 + 内容
+};
+
+// 按 QIACHIP.uiConfig[0] 隐藏被关闭的界面。未配置或缺失的键默认显示（true）。
+// 优先读 localStorage 缓存（index.html head 段注入），fallback 到 QIACHIP.uiConfig。
+function applyUIFlags() {
+  let cfg = null;
+  try { cfg = JSON.parse(localStorage.getItem('elecsim_uiconfig') || 'null'); } catch(e){}
+  if (!cfg) cfg = (window.QIACHIP && QIACHIP.uiConfig && QIACHIP.uiConfig[0]) || {};
+  for (const key in UI_FLAG_FEATURES) {
+    const enabled = cfg[key] !== false;
+    UI_FLAG_FEATURES[key].forEach(sel => {
+      const el = document.querySelector(sel);
+      if (el) el.style.display = enabled ? '' : 'none';
+    });
+  }
+}
+
 function init() {
   // Preload bell audio early so it's ready when simulation starts
   BellAudio.preload();
@@ -13,6 +38,8 @@ function init() {
   QIACHIP.initEditor();
   // Build templates list
   Templates.buildTemplateList();
+  // 应用「前台界面开关」：按 数据/产品库.js 的 QIACHIP.uiConfig 隐藏被关闭的界面
+  applyUIFlags();
   // Apply initial recBg visual state
   UI.setRecBg(S.recBg);
   // Setup canvas

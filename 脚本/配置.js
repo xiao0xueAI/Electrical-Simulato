@@ -1,6 +1,6 @@
 // ==================== Section 1: Config ====================
 const Config = {
-  grid: 20,
+  grid: 10,
   zoomMin: 0.2,
   zoomMax: 4,
   zoomStep: 0.1,
@@ -9,7 +9,7 @@ const Config = {
   autoSaveInterval: 30000,
   maxImageSize: 200 * 1024, // 200KB base64
   pinRadius: 8.5,
-  pinHitRadius: 14,
+  pinHitRadius: 18,
   particleSpeed: 0.3,
   categoryColors: {
     '电源': '#f0883e', '开关/按钮': '#58a6ff', '保护器件': '#f85149',

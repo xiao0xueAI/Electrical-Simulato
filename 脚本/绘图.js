@@ -46,6 +46,17 @@ function markStaticDirty() {
   requestRender();
 }
 
+// 调色辅助：把十六进制颜色按比例 f(0~1) 加深，用于端子描边
+function shadeHex(hex, f) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return hex;
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = Math.max(0, Math.round(r * (1 - f)));
+  g = Math.max(0, Math.round(g * (1 - f)));
+  b = Math.max(0, Math.round(b * (1 - f)));
+  return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
 function resize() {
   const r = window.devicePixelRatio || 1;
   const area = document.getElementById('canvasArea');
@@ -216,6 +227,8 @@ const Renderer = {
   _drawSelectionOverlay() {
     const c = S.components.find(c => c.id === S.selected);
     if (!c) return;
+    // 遥控器不需要选中框：点击按键触发时会遮挡实物照片，影响操作
+    if (c.type === 'rf_remote' || c.type === 'bt_remote' || c.type === 'rf_remote_2key') return;
     const bw = c.w || 100, bh = c.h || 56;
     const catColor = Config.categoryColors[c.cat] || '#58a6ff';
     // Lightweight dashed outline instead of expensive shadowBlur
@@ -238,12 +251,28 @@ const Renderer = {
     const endY = startY + H / S.zoom + g * 2;
     const isXray = false;
 
-    ctx.strokeStyle = isXray ? 'rgba(57,210,192,0.06)' : 'rgba(255,255,255,0.04)';
+    ctx.strokeStyle = isXray ? 'rgba(57,210,192,0.06)' : 'rgba(255,255,255,0.05)';
     ctx.lineWidth = 0.5;
     ctx.beginPath();
     for (let x = startX; x < endX; x += g) { ctx.moveTo(x, startY); ctx.lineTo(x, endY); }
     for (let y = startY; y < endY; y += g) { ctx.moveTo(startX, y); ctx.lineTo(endX, y); }
     ctx.stroke();
+
+    // 放大视图时叠加更细的次级网格（grid/2），提升精细对齐观感；
+    // 仅在 zoom>=1.5 时绘制，避免普通视图下线条过密影响性能与观感。
+    if (S.zoom >= 1.5) {
+      const sg = g / 2;
+      const sStartX = Math.floor(-S.pan.x / S.zoom / sg) * sg;
+      const sStartY = Math.floor(-S.pan.y / S.zoom / sg) * sg;
+      const sEndX = sStartX + W / S.zoom + sg * 2;
+      const sEndY = sStartY + H / S.zoom + sg * 2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      for (let x = sStartX; x < sEndX; x += sg) { ctx.moveTo(x, sStartY); ctx.lineTo(x, sEndY); }
+      for (let y = sStartY; y < sEndY; y += sg) { ctx.moveTo(sStartX, y); ctx.lineTo(sEndX, y); }
+      ctx.stroke();
+    }
 
     if (isXray) {
       ctx.strokeStyle = 'rgba(57,210,192,0.1)';
@@ -257,7 +286,7 @@ const Renderer = {
   drawComponents() {
     S.components.forEach(c => {
       const sel = !_drawingStatic && S.selected === c.id;
-      const catColor = Config.categoryColors[c.cat] || '#58a6ff';
+      const catColor = Config.categoryColors[c.cat] || '#8b949e';
       const isXray = false;
 
       ctx.save();
@@ -315,7 +344,8 @@ const Renderer = {
           }
           const remote2kLit = c.type === 'rf_remote_2key' && (c.props.pressed1 || c.props.pressed2);
           const drySignalOn = c.type === 'dry_signal' && c.props.energized;
-          const wantOn = (c.props.closed || c.props.pressed || lampLit || remote2kLit || drySignalOn) && c.imageOn;
+          const remoteBtnLit = (c.type === 'rf_remote' || c.type === 'bt_remote') && c.buttons && c.props.pressedButtons && c.props.pressedButtons.some(Boolean);
+          const wantOn = (c.props.closed || c.props.pressed || lampLit || remote2kLit || drySignalOn || remoteBtnLit) && c.imageOn;
           const imgSrc = wantOn ? c.imageOn : c.image;
           const cacheKey = wantOn ? '_imgOnCache' : '_imgCache';
           let img = c[cacheKey];
@@ -687,6 +717,10 @@ const Renderer = {
             ctx.restore();
           }
         }
+        // 遥控器带照片时，照片绘后再叠加可配置按键（rf_remote 有照片、bt_remote 可带可无）
+        if (c.type === 'rf_remote' || c.type === 'bt_remote') {
+          drawRemoteButtons(c, bw, bh);
+        }
         return;
       }
 
@@ -766,7 +800,7 @@ const Renderer = {
       const baseFontSize = (c.type === 'battery_12v') ? 40
                      : (c.type === 'bell_dc') ? 28
                      : (c.type === 'lamp') ? 22
-                     : (c.type === 'dry_relay') ? 24
+                     : (c.type === 'dry_relay' || c.type === 'bt_relay') ? 24
                      : 16;
 
       c.pins.forEach(pin => {
@@ -777,9 +811,11 @@ const Renderer = {
         const fs = pin.fs || baseFontSize;
         const font = 'bold ' + fs + 'px Arial';
 
-        // Stable color — never the wire color
+        // Stable color — never the wire color；优先使用后台设置的自定义标注色
         let color;
-        if (lbl === 'L' || lbl === '+') color = P.live;
+        if (pin.labelColor && /^#[0-9a-fA-F]{6}$/.test(pin.labelColor)) {
+          color = pin.labelColor;
+        } else if (lbl === 'L' || lbl === '+') color = P.live;
         else if (lbl === 'L1') color = P.l1;
         else if (lbl === 'N') color = P.neutral;
         else if (lbl === '-') color = P.neg;
@@ -846,28 +882,35 @@ const Renderer = {
         if (isXray) {
           ctx.fillStyle = connected ? '#39d2c0' : 'rgba(57,210,192,0.4)';
         } else {
-          const lbl = pin.label ? pin.label.toUpperCase() : '';
-          const isL = lbl === 'L';
-          const isL1 = lbl === 'L1';
-          const isN = lbl === 'N' || lbl === 'L2';
-          if (isL || isL1 || isN) {
-            // L=red (live), L1=green (output), N/L2=blue (neutral)
-            if (isL) {
-              ctx.fillStyle = '#f85149'; ctx.strokeStyle = '#c02222';
-            } else if (isL1) {
-              ctx.fillStyle = '#22c55e'; ctx.strokeStyle = '#166534';
-            } else {
-              ctx.fillStyle = '#58a6ff'; ctx.strokeStyle = '#2266cc';
-            }
-          } else if (lbl === 'NO' || lbl === 'COM' || lbl === 'NC') {
-            // 干接点输出端子 → 黄色，匹配PCB黄圈
-            ctx.fillStyle = '#f0c040'; ctx.strokeStyle = '#c09020';
+          // 自定义端子颜色优先（后台端子色选择器设置），否则按标签启发式
+          const customTerm = (pin.color && /^#[0-9a-fA-F]{6}$/.test(pin.color)) ? pin.color : null;
+          if (customTerm) {
+            ctx.fillStyle = customTerm;
+            ctx.strokeStyle = shadeHex(customTerm, 0.4);
           } else {
-            const grd = ctx.createRadialGradient(px - 1, py - 1, 0, px, py, pinR);
-            grd.addColorStop(0, '#484f58');
-            grd.addColorStop(1, '#2d333b');
-            ctx.fillStyle = grd;
-            ctx.strokeStyle = '#6e7681';
+            const lbl = pin.label ? pin.label.toUpperCase() : '';
+            const isL = lbl === 'L';
+            const isL1 = lbl === 'L1';
+            const isN = lbl === 'N' || lbl === 'L2';
+            if (isL || isL1 || isN) {
+              // L=red (live), L1=green (output), N/L2=blue (neutral)
+              if (isL) {
+                ctx.fillStyle = '#f85149'; ctx.strokeStyle = '#c02222';
+              } else if (isL1) {
+                ctx.fillStyle = '#22c55e'; ctx.strokeStyle = '#166534';
+              } else {
+                ctx.fillStyle = '#58a6ff'; ctx.strokeStyle = '#2266cc';
+              }
+            } else if (lbl === 'NO' || lbl === 'COM' || lbl === 'NC') {
+              // 干接点输出端子 → 黄色，匹配PCB黄圈
+              ctx.fillStyle = '#f0c040'; ctx.strokeStyle = '#c09020';
+            } else {
+              const grd = ctx.createRadialGradient(px - 1, py - 1, 0, px, py, pinR);
+              grd.addColorStop(0, '#484f58');
+              grd.addColorStop(1, '#2d333b');
+              ctx.fillStyle = grd;
+              ctx.strokeStyle = '#6e7681';
+            }
           }
         }
         ctx.fill();
@@ -922,7 +965,7 @@ const Renderer = {
     if (c.type === 'rotary') return '→' + c.props.position;
     if (c.type === 'push_no' || c.type === 'push_nc') return c.props.pressed ? '按下' : '释放';
     if (c.type === 'fuse') return c.props.blown ? '熔断!' : c.props.rating + 'A';
-    if (c.type === 'relay5' || c.type === 'relay8' || c.type === 'contactor' || c.type === 'dry_relay') return c.props.energized ? '吸合' : '释放';
+    if (c.type === 'relay5' || c.type === 'relay8' || c.type === 'contactor' || c.type === 'dry_relay' || c.type === 'bt_relay') return c.props.energized ? '吸合' : '释放';
     if (c.type === 'motor_dc') return c.props.voltage + 'V';
     if (c.type === 'buzzer') return c.props.voltage + 'V';
     if (c.type === 'solenoid') return c.props.voltage + 'V';
@@ -1129,7 +1172,9 @@ const Renderer = {
       ctx.lineTo(14, tgt); ctx.stroke();
       ctx.beginPath(); ctx.arc(14, -15, 2.5, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(14, 15, 2.5, 0, Math.PI * 2); ctx.fill();
-    } else if (c.type === 'relay5' || c.type === 'relay8' || c.type === 'contactor' || c.type === 'dry_relay') {
+    } else if (c.type === 'relay5' || c.type === 'relay8' || c.type === 'contactor' || c.type === 'dry_relay' || c.type === 'bt_relay') {
+      // 蓝牙模块用蓝色描边以区分 433 模块
+      if (c.type === 'bt_relay') ctx.strokeStyle = '#30363d';
       // Coil
       ctx.beginPath(); ctx.arc(-20, 0, 10, 0, Math.PI * 2); ctx.stroke();
       ctx.font = '7px monospace'; ctx.textAlign = 'center'; ctx.fillText('C', -20, 3);
@@ -1139,6 +1184,13 @@ const Renderer = {
       if (c.props.energized) { ctx.lineTo(25, comY - 8); }
       else { ctx.lineTo(25, comY + 8); }
       ctx.stroke();
+      if (c.type === 'bt_relay') {
+        ctx.fillStyle = '#2196f3';
+        ctx.font = 'bold 11px "PingFang SC",sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText('蓝牙', 0, -bh / 2 + 14);
+        ctx.textBaseline = 'alphabetic';
+      }
     } else if (c.type === 'motor_dc') {
       ctx.beginPath(); ctx.arc(0, -2, 12, 0, Math.PI * 2); ctx.stroke();
       ctx.font = '9px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('M', 0, -2);
@@ -1192,113 +1244,36 @@ const Renderer = {
         c._ringing = false;
         BellAudio.stop();
       }
-    } else if (c.type === 'rf_remote') {
-      // 433MHz 无线遥控器：中央大按钮 + 信号发射动画
-      // 图片 200×268，PIL精确测量：按钮中心 x=62(31.0%), y=130(48.5%)
-      const btnImgY = 130;  // 实物图上按钮中心的y (PIL精确测量)
-      const btnImgX = 62;   // 实物图上按钮中心的x (按钮偏左)
-      const imgH = 268; const imgW = 200;
-      const localBtnY = (btnImgY / imgH - 0.5) * c.h;  // ≈ -4 (c.h=273)
-      const localBtnX = (btnImgX / imgW - 0.5) * c.w;  // ≈ -38 (按钮在左侧)
-      const cx = localBtnX, cy = localBtnY;
-      const btnR = 28; // 大按钮（按比例缩放）
-      const isPressed = S.simRunning && c.props.pressed;
+    } else if (c.type === 'rf_remote' || c.type === 'bt_remote') {
+      // 无线遥控器：基于实物照片(rf_remote) 或 画布矢量样式(bt_remote) + 可配置按键（c.buttons）
+      const isBt = c.type === 'bt_remote';
+      const sigColor = isBt ? '#2196f3' : '#ffa800';
 
-      // === 信号发射图标（按下时在遥控器上方显示，脉冲动画）===
-      if (isPressed && c.signalImage) {
-        let sigImg = c._sigImg;
-        if (!sigImg || sigImg.src !== c.signalImage) {
-          sigImg = Registry.preloadImage(c.signalImage);
-          c._sigImg = sigImg;
-        }
-        if (sigImg.complete && sigImg.naturalWidth > 0) {
-          const sigW = sigImg.naturalWidth;
-          const sigH = sigImg.naturalHeight;
-          const sigDrawH = 36; // 固定显示高度
-          const sigDrawW = (sigW / sigH) * sigDrawH;
-          const sigY = -bh / 2 - sigDrawH - 6; // 遥控器上方
-          // 脉冲动画：opacity 和 scale 随时间变化
-          const pulseT = (Date.now() % 800) / 800;
-          const pulseAlpha = 0.5 + 0.5 * Math.sin(pulseT * Math.PI * 2);
-          const scale = 1 + 0.15 * Math.sin(pulseT * Math.PI * 2);
-          ctx.save();
-          ctx.globalAlpha = 0.4 + pulseAlpha * 0.6;
-          ctx.translate(cx, sigY + sigDrawH / 2);
-          ctx.scale(scale, scale);
-          // 外圈光晕
-          ctx.shadowColor = 'rgba(255, 80, 20, 0.6)';
-          ctx.shadowBlur = 12 + pulseAlpha * 8;
-          ctx.drawImage(sigImg, -sigDrawW / 2, -sigDrawH / 2, sigDrawW, sigDrawH);
-          ctx.shadowBlur = 0;
-          ctx.restore();
-        }
-      }
-
-      // 按压光晕（强）
-      if (isPressed) {
+      // 蓝牙遥控器无实物照片，先画一个蓝色机身作为背景
+      if (isBt) {
+        const pad = 4, r = 16;
+        const x0 = -bw / 2 + pad, y0 = -bh / 2 + pad, w0 = bw - pad * 2, h0 = bh - pad * 2;
         ctx.beginPath();
-        ctx.arc(cx, cy, btnR + 20, 0, Math.PI * 2);
-        const glowGrad = ctx.createRadialGradient(cx, cy, btnR, cx, cy, btnR + 20);
-        glowGrad.addColorStop(0, 'rgba(255, 120, 40, 0.6)');
-        glowGrad.addColorStop(1, 'rgba(255, 80, 40, 0)');
-        ctx.fillStyle = glowGrad;
+        ctx.moveTo(x0 + r, y0);
+        ctx.arcTo(x0 + w0, y0, x0 + w0, y0 + h0, r);
+        ctx.arcTo(x0 + w0, y0 + h0, x0, y0 + h0, r);
+        ctx.arcTo(x0, y0 + h0, x0, y0, r);
+        ctx.arcTo(x0, y0, x0 + w0, y0, r);
+        ctx.closePath();
+        ctx.fillStyle = '#1b2330';
         ctx.fill();
+        ctx.strokeStyle = '#3a4250';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = sigColor;
+        ctx.font = 'bold 13px "PingFang SC",sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillText('📶 蓝牙', 0, -bh / 2 + 10);
+        ctx.textBaseline = 'alphabetic';
       }
-      // 按钮外圈（金属环）
-      ctx.beginPath();
-      ctx.arc(cx, cy, btnR + 5, 0, Math.PI * 2);
-      ctx.fillStyle = '#3a3a3a';
-      ctx.fill();
-      ctx.strokeStyle = '#666';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      // 按钮本体
-      const btnGrad = ctx.createRadialGradient(cx - 5, cy - 5, 3, cx, cy, btnR);
-      if (isPressed) {
-        btnGrad.addColorStop(0, '#ff6040');
-        btnGrad.addColorStop(0.7, '#cc3020');
-        btnGrad.addColorStop(1, '#8a1a0a');
-      } else {
-        btnGrad.addColorStop(0, '#5a5a5a');
-        btnGrad.addColorStop(0.7, '#3a3a3a');
-        btnGrad.addColorStop(1, '#1a1a1a');
-      }
-      ctx.beginPath();
-      ctx.arc(cx, cy, btnR, 0, Math.PI * 2);
-      ctx.fillStyle = btnGrad;
-      ctx.fill();
-      ctx.strokeStyle = isPressed ? '#ffaa44' : '#555';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      // "发射" 文字在按钮内
-      ctx.fillStyle = isPressed ? '#fff' : '#ccc';
-      ctx.font = 'bold 13px "PingFang SC","Microsoft YaHei",sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(isPressed ? '发射中' : '发射', cx, cy);
-      // 按钮下方提示文字
-      ctx.fillStyle = '#999';
-      ctx.font = '10px "PingFang SC","Microsoft YaHei",sans-serif';
-      ctx.fillText('按下发射', cx, cy + btnR + 14);
-      // 无线波纹（按下时扩散）
-      if (isPressed) {
-        const t = (Date.now() % 900) / 900;
-        for (let i = 0; i < 4; i++) {
-          const phase = (t + i * 0.25) % 1;
-          const r = btnR + 10 + phase * 45;
-          const alpha = (1 - phase) * 0.6;
-          ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(255, 168, 0, ${alpha})`;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-      }
-      // 底部小字 "433MHz"
-      ctx.fillStyle = '#888';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('433MHz', 0, bh / 2 - 12);
+
+      // 信号图标 + 按键 + 底部信号文字，统一由共享函数绘制（带照片/无照片通用）
+      drawRemoteButtons(c, bw, bh);
     } else if (c.type === 'rf_remote_2key') {
       // 433MHz 两键遥控器：实物图 366×500 (w=200, h=273)
       // PIL边缘检测精确坐标: ON img(110,102) 30.1%/20.5%, OFF img(130,226) 35.5%/45.1%
@@ -1309,74 +1284,12 @@ const Renderer = {
       const isPressed2 = S.simRunning && c.props.pressed2;
       const anyPressed = isPressed1 || isPressed2;
 
-      // === 信号发射图标（任一按钮按下时显示）===
-      if (anyPressed && c.signalImage) {
-        let sigImg = c._sigImg;
-        if (!sigImg || sigImg.src !== c.signalImage) {
-          sigImg = Registry.preloadImage(c.signalImage);
-          c._sigImg = sigImg;
-        }
-        if (sigImg.complete && sigImg.naturalWidth > 0) {
-          const sigW = sigImg.naturalWidth, sigH = sigImg.naturalHeight;
-          const sigDrawH = 36, sigDrawW = (sigW / sigH) * sigDrawH;
-          const sigY = -c.h / 2 - sigDrawH - 6;
-          const pulseT = (Date.now() % 800) / 800;
-          const pulseAlpha = 0.5 + 0.5 * Math.sin(pulseT * Math.PI * 2);
-          const scale = 1 + 0.15 * Math.sin(pulseT * Math.PI * 2);
-          ctx.save();
-          ctx.globalAlpha = 0.4 + pulseAlpha * 0.6;
-          ctx.translate(0, sigY + sigDrawH / 2);
-          ctx.scale(scale, scale);
-          ctx.shadowColor = 'rgba(255, 80, 20, 0.6)';
-          ctx.shadowBlur = 12 + pulseAlpha * 8;
-          ctx.drawImage(sigImg, -sigDrawW / 2, -sigDrawH / 2, sigDrawW, sigDrawH);
-          ctx.shadowBlur = 0;
-          ctx.restore();
-        }
-      }
-
-      // === LED 红色指示灯（按压时闪烁）=== 
-      // 仅叠加红色光晕，不遮挡实物图
-      if (anyPressed) {
-        const pulseT = (Date.now() % 600) / 600;
-        const alpha = 0.3 + 0.7 * Math.abs(Math.sin(pulseT * Math.PI * 2));
-        // LED 发光光晕
-        const glowR = 10;
-        ctx.beginPath();
-        ctx.arc(0, ledCY, glowR, 0, Math.PI * 2);
-        const glowGrad = ctx.createRadialGradient(0, ledCY, 2, 0, ledCY, glowR);
-        glowGrad.addColorStop(0, `rgba(255, 30, 20, ${alpha})`);
-        glowGrad.addColorStop(0.5, `rgba(255, 0, 0, ${alpha * 0.6})`);
-        glowGrad.addColorStop(1, 'rgba(255, 0, 0, 0)');
-        ctx.fillStyle = glowGrad;
-        ctx.fill();
-        // LED 中心亮点
-        ctx.beginPath();
-        ctx.arc(0, ledCY, 3, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255, 60, 40, ${alpha})`;
-        ctx.fill();
-      }
-
-      // === RF 无线波纹（按压时从本体扩散）===
-      if (anyPressed) {
-        const t = (Date.now() % 900) / 900;
-        for (let i = 0; i < 4; i++) {
-          const phase = (t + i * 0.25) % 1;
-          const r = 30 + phase * 70;
-          const alpha = (1 - phase) * 0.45;
-          ctx.beginPath();
-          ctx.arc(0, 0, r, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(255, 168, 0, ${alpha})`;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-      }
+      // 433 遥控按下时的「信号图标/LED/波纹」装饰已全部去除——按下仅由 imageOn 切换表现通断。
 
       // === 底部标识文字 ===
       ctx.fillStyle = '#999';
       ctx.font = '9px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('433MHz', 0, c.h / 2 - 10);
       ctx.fillText('ON / OFF', 0, c.h / 2 - 1);
       // 干接点控制器：模式文字（顶部大号）+ 模式按钮（底部矩形）
       const mode = c.props.mode || 'none';
@@ -1450,4 +1363,44 @@ const Renderer = {
     document.getElementById('wireCount').textContent = S.wires.length;
   }
 };
+
+// 无线遥控器（rf_remote / bt_remote）按键与信号叠加层。
+// 既用于「带照片」的遥控器（在 if(c.image) 块内照片绘后调用），
+// 也用于「无照片」的蓝牙遥控器（在图标分支内机身绘后调用）。
+function drawRemoteButtons(c, bw, bh) {
+  const isBt = c.type === 'bt_remote';
+  const btns = (c.buttons && c.buttons.length) ? c.buttons : null;
+
+  // 仅绘制「按下时的按键亮起反馈」（用户要的效果：按一下遥控器亮起，4秒后熄灭）。
+  // 不画信号发射图标、不画外扩辉光方框——只把被按下的按键本身描成高亮实心，跟随 shape。
+  if (!btns) return;
+  btns.forEach((b, i) => {
+    const isP = S.simRunning && c.props.pressedButtons && c.props.pressedButtons[i];
+    if (!isP) return;
+    const shape = b.shape || 'circle';
+    const bx = b.x, by = b.y;
+    const r = (b.w || b.h || 50) / 2;
+    const hw = (b.w || 50) / 2, hh = (b.h || 50) / 2;
+    ctx.save();
+    if (shape === 'circle') {
+      ctx.beginPath();
+      ctx.arc(bx, by, r, 0, Math.PI * 2);
+    } else {
+      const pad = 4, rr = 8;
+      ctx.beginPath();
+      ctx.moveTo(bx - hw + rr, by - hh);
+      ctx.arcTo(bx + hw, by - hh, bx + hw, by + hh, rr);
+      ctx.arcTo(bx + hw, by + hh, bx - hw, by + hh, rr);
+      ctx.arcTo(bx - hw, by + hh, bx - hw, by - hh, rr);
+      ctx.arcTo(bx - hw, by - hh, bx + hw, by - hh, rr);
+      ctx.closePath();
+    }
+    ctx.fillStyle = isBt ? 'rgba(33, 150, 243, 0.85)' : 'rgba(255, 140, 30, 0.85)';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = isBt ? '#90caf9' : '#ffd0a0';
+    ctx.stroke();
+    ctx.restore();
+  });
+}
 

@@ -76,20 +76,52 @@ function onMouseDown(e) {
 
   // 433MHz 遥控器按钮按下
   for (const c of S.components) {
-    if (c.type === 'rf_remote') {
+    if (c.type === 'rf_remote' || c.type === 'bt_remote') {
       const localX = pos.x - c.x, localY = pos.y - c.y;
-      // PIL精确测量：按钮中心 x=62(31.0%), y=130(48.5%) in 200×268 image, c.w=200, c.h=273
-      const btnLocalY = (130 / 268 - 0.5) * c.h;  // ≈ -4
-      const btnLocalX = (62 / 200 - 0.5) * c.w;    // ≈ -38 (按钮偏左)
-      if (Math.hypot(localX - btnLocalX, localY - btnLocalY) < 40) {  // 大按钮28 + 金属环6 + 容差6
-        c.props.pressed = true;
-        S._pressRemote = c;
-        S.dragging = null;  // 不要触发拖动
-        S.dirty = true;
-        markStaticDirty();
-        if (Engine.running) Engine.solve();  // 立即处理RF信号（不等4帧节流）
-        e.preventDefault();
-        return;
+      const btns = c.buttons || [];
+      // 遍历可配置按键，命中检测支持圆形(半径=直径/2)与方形(包围盒)，位置/大小由 buttons 定义，相对元件中心
+      for (let i = 0; i < btns.length; i++) {
+        const b = btns[i];
+        const shape = b.shape || 'circle';
+        let hit = false;
+        if (shape === 'circle') {
+          const r = (b.w || b.h || 50) / 2;
+          hit = Math.hypot(localX - b.x, localY - b.y) <= r;
+        } else {
+          const hw = (b.w || 50) / 2, hh = (b.h || 50) / 2;
+          hit = localX >= b.x - hw && localX <= b.x + hw && localY >= b.y - hh && localY <= b.y + hh;
+        }
+        if (hit) {
+          if (!c.props.pressedButtons) c.props.pressedButtons = btns.map(() => false);
+          const isToggle = c.pressMode === 'toggle';
+          if (isToggle) {
+            // 点按切换模式（用户要的效果）：
+            //   1) 按一下 → 遥控器「亮起」(imageOn 或按键高亮)，并发一个 toggle 脉冲给配对的 relay；
+            //   2) relay 收到脉冲后 energized 翻转并保持（电脑开机/关机，与遥控视觉无关）；
+            //   3) 4 秒后遥控器画面「熄灭」复原为 image —— 这只是遥控自身的视觉，不影响继电器通电。
+            if (!c.props._rfPulseSeq) c.props._rfPulseSeq = [];
+            c.props._rfPulseSeq[i] = (c.props._rfPulseSeq[i] || 0) + 1;
+            c.props.pressedButtons[i] = true;
+            if (!c.props._visualTimers) c.props._visualTimers = [];
+            if (c.props._visualTimers[i]) clearTimeout(c.props._visualTimers[i]);
+            c.props._visualTimers[i] = setTimeout(() => {
+              c.props.pressedButtons[i] = false;   // 仅视觉熄灭，不动 relay
+              markStaticDirty();
+              if (Engine.running) Engine.solve();
+            }, 4000);
+          } else {
+            // 按住模式：按下通电，松开断电（保持到 mouseup）
+            c.props.pressedButtons[i] = true;
+          }
+          S._pressRemote = c;
+          S._pressRemoteBtnIdx = i;
+          S.dragging = null;  // 不要触发拖动
+          S.dirty = true;
+          markStaticDirty();
+          if (Engine.running) Engine.solve();  // 立即处理RF信号（不等4帧节流）
+          e.preventDefault();
+          return;
+        }
       }
     }
     if (c.type === 'rf_remote_2key') {
@@ -254,17 +286,32 @@ function onMouseUp(e) {
     S.dirty = true;
     markStaticDirty();
   }
-  // 433MHz 遥控器按钮松开
+  // 433MHz / 蓝牙 遥控器按钮松开
   if (S._pressRemote) {
-    if (S._pressRemote.type === 'rf_remote_2key') {
-      S._pressRemote.props.pressed1 = false;
-      S._pressRemote.props.pressed2 = false;
+    const rc = S._pressRemote;
+    if (rc.pressMode === 'toggle') {
+      // 点按切换模式：视觉由 4 秒定时器复位，松手时不清空（否则切换刚触发就被取消）
+      S._pressRemote = null;
+      S._pressRemoteBtnIdx = undefined;
+      markStaticDirty();
     } else {
-      S._pressRemote.props.pressed = false;
+      if (rc.type === 'rf_remote_2key') {
+        rc.props.pressed1 = false;
+        rc.props.pressed2 = false;
+      } else if (rc.type === 'rf_remote' || rc.type === 'bt_remote') {
+        if (S._pressRemoteBtnIdx !== undefined && rc.props.pressedButtons) {
+          rc.props.pressedButtons[S._pressRemoteBtnIdx] = false;
+        } else {
+          rc.props.pressed = false;
+        }
+      } else {
+        rc.props.pressed = false;
+      }
+      S._pressRemote = null;
+      S._pressRemoteBtnIdx = undefined;
+      markStaticDirty();
+      if (Engine.running) Engine.solve();  // 立即处理RF信号释放
     }
-    S._pressRemote = null;
-    markStaticDirty();
-    if (Engine.running) Engine.solve();  // 立即处理RF信号释放
   }
   S.clickCompId = null;
   S.clickPos = null;

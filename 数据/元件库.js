@@ -282,8 +282,10 @@ const Registry = {
       h: def.h || 56,
       x: Math.round(x / g) * g,
       y: Math.round(y / g) * g,
-      pins: def.pins.map(p => ({ ...p })),
-      props: { ...def.props },
+      pins: (def.pins || []).map(p => ({ ...p })),
+      buttons: def.buttons ? def.buttons.map(b => ({ ...b })) : [],
+      pressMode: def.pressMode || 'momentary',
+      props: { ...def.props, pressedButtons: def.buttons ? def.buttons.map(() => false) : [] },
       pinRadius: def.pinRadius,
       simCurrent: 0,
       simVoltage: 0
